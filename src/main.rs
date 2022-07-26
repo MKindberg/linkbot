@@ -19,14 +19,46 @@ impl EventHandler for Handler {
             == "!set"
         {
             let words: Vec<&str> = msg.content.split(' ').collect();
-            if words.len() >= 3 {
-                let mut replies = read_user_replies();
+            let mut replies = read_user_replies();
+            if msg.content.contains('|') {
+                let mut parts = msg.content.split('|');
                 replies.insert(
-                    words[1].to_string(),
+                    parts
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .skip_while(|c| *c != ' ')
+                        .collect::<String>()
+                        .trim()
+                        .to_string(),
+                    parts.next().unwrap_or("").to_lowercase(),
+                );
+                write_user_replies(replies);
+            } else if words.len() >= 3 {
+                replies.insert(
+                    words[1].to_lowercase(),
                     words[2..].iter().map(|s| s.to_string() + " ").collect(),
                 );
                 write_user_replies(replies);
             }
+        } else if msg
+            .content
+            .chars()
+            .take_while(|c| *c != ' ')
+            .collect::<String>()
+            == "!unset"
+        {
+            let mut replies = read_user_replies();
+            let words: Vec<&str> = msg.content.split(' ').collect();
+            replies.remove(
+                &words[1..]
+                    .iter()
+                    .map(|s| s.to_string() + " ")
+                    .collect::<String>()
+                    .trim()
+                    .to_lowercase(),
+            );
+            write_user_replies(replies);
         } else if let Some(s) = get_user_reply(&msg.author.name) {
             if let Err(why) = msg
                 .channel_id
@@ -60,7 +92,10 @@ fn read_user_replies() -> HashMap<String, String> {
         .split('\n')
         .map(|s| {
             let mut parts = s.split('|');
-            (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string())
+            (
+                parts.next().unwrap_or("").to_string(),
+                parts.next().unwrap_or("").to_string(),
+            )
         })
         .collect()
 }
