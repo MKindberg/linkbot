@@ -1,6 +1,7 @@
 #![feature(iter_intersperse)]
 use std::collections::HashMap;
 use std::{env, fs};
+use rand::seq::SliceRandom;
 
 use serenity::async_trait;
 use serenity::model::channel::Message;
@@ -20,6 +21,8 @@ impl EventHandler for Handler {
             let mut replies = read_user_replies();
             replies.remove(&msg.content["!unset ".len()..].trim().to_lowercase());
             write_user_replies(replies);
+        } else if msg.content.starts_with("!add") {
+            add_user_reply(&msg.content["!add ".len()..]);
         } else if let Some(s) = get_user_reply(&msg.author.name) {
             if let Err(why) = msg
                 .channel_id
@@ -64,6 +67,28 @@ fn set_user_reply(input: &str) {
     write_user_replies(replies);
 }
 
+fn add_user_reply(input: &str) {
+    let parts = split_input(input);
+    if parts.is_empty() {
+        return;
+    }
+
+    let mut replies = read_user_replies();
+
+    let user = parts[0].to_lowercase();
+    let mut reply: Vec<String> = parts.iter().skip(1).cloned().map(String::from).collect();
+    if let Some(v) = replies.get_mut(&user) {
+        v.append(&mut reply);
+    } else {
+        replies.insert(
+            user,
+            reply,
+        );
+    }
+
+    write_user_replies(replies);
+}
+
 fn write_user_replies(replies: ReplyMap) {
     fs::write(
         env::var("USER_REPLY_FILE").expect("USER_REPLY_FILE is not set"),
@@ -100,13 +125,12 @@ fn read_user_replies() -> ReplyMap {
 fn get_user_reply(user: &str) -> Option<String> {
     read_user_replies()
         .get(&user.to_lowercase())?
-        .get(0)
+        .choose(&mut rand::thread_rng())
         .cloned()
 }
 
 #[tokio::main]
 async fn main() {
-
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
     // Set gateway intents, which decides what events the bot will be notified about
     let intents = GatewayIntents::GUILD_MESSAGES
