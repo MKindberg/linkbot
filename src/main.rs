@@ -1,3 +1,4 @@
+#![feature(iter_intersperse)]
 use std::collections::HashMap;
 use std::{env, fs};
 
@@ -8,56 +9,16 @@ use serenity::prelude::*;
 
 struct Handler;
 
+type ReplyMap = HashMap<String, Vec<String>>;
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
-        if msg
-            .content
-            .chars()
-            .take_while(|c| *c != ' ')
-            .collect::<String>()
-            == "!set"
-        {
-            let words: Vec<&str> = msg.content.split(' ').collect();
+        if msg.content.starts_with("!set") {
+            set_user_reply(&msg.content["!set ".len()..]);
+        } else if msg.content.starts_with("!unset") {
             let mut replies = read_user_replies();
-            if msg.content.contains('|') {
-                let mut parts = msg.content.split('|');
-                replies.insert(
-                    parts
-                        .next()
-                        .unwrap_or("")
-                        .chars()
-                        .skip_while(|c| *c != ' ')
-                        .collect::<String>()
-                        .trim()
-                        .to_string(),
-                    parts.next().unwrap_or("").to_lowercase(),
-                );
-                write_user_replies(replies);
-            } else if words.len() >= 3 {
-                replies.insert(
-                    words[1].to_lowercase(),
-                    words[2..].iter().map(|s| s.to_string() + " ").collect(),
-                );
-                write_user_replies(replies);
-            }
-        } else if msg
-            .content
-            .chars()
-            .take_while(|c| *c != ' ')
-            .collect::<String>()
-            == "!unset"
-        {
-            let mut replies = read_user_replies();
-            let words: Vec<&str> = msg.content.split(' ').collect();
-            replies.remove(
-                &words[1..]
-                    .iter()
-                    .map(|s| s.to_string() + " ")
-                    .collect::<String>()
-                    .trim()
-                    .to_lowercase(),
-            );
+            replies.remove(&msg.content["!unset ".len()..].trim().to_lowercase());
             write_user_replies(replies);
         } else if let Some(s) = get_user_reply(&msg.author.name) {
             if let Err(why) = msg
@@ -75,18 +36,55 @@ impl EventHandler for Handler {
     }
 }
 
-fn write_user_replies(replies: HashMap<String, String>) {
+fn split_input(input: &str) -> Vec<&str> {
+    if input.contains('|') {
+        return input.split('|').collect();
+    }
+
+    let idx = input.find(' ').unwrap_or(0);
+    if idx != 0 {
+        return vec![&input[..idx], &input[idx + 1..]];
+    }
+
+    vec![]
+}
+
+fn set_user_reply(input: &str) {
+    let parts = split_input(input);
+    if parts.is_empty() {
+        return;
+    }
+
+    let mut replies = read_user_replies();
+    replies.insert(
+        parts[0].trim().to_lowercase(),
+        parts.iter().skip(1).cloned().map(String::from).collect(),
+    );
+
+    write_user_replies(replies);
+}
+
+fn write_user_replies(replies: ReplyMap) {
     fs::write(
         env::var("USER_REPLY_FILE").expect("USER_REPLY_FILE is not set"),
         replies
             .iter()
-            .map(|(k, v)| format!("{}|{}\n", k.to_lowercase(), v))
+            .map(|(k, v)| {
+                format!(
+                    "{}|{}\n",
+                    k.to_lowercase(),
+                    v.iter()
+                        .cloned()
+                        .intersperse("|".to_string())
+                        .collect::<String>()
+                )
+            })
             .collect::<String>(),
     )
     .expect("Failed to write file");
 }
 
-fn read_user_replies() -> HashMap<String, String> {
+fn read_user_replies() -> ReplyMap {
     fs::read_to_string(env::var("USER_REPLY_FILE").expect("USER_REPLY_FILE is not set"))
         .expect("Something went wrong reading the file")
         .split('\n')
@@ -94,29 +92,20 @@ fn read_user_replies() -> HashMap<String, String> {
             let mut parts = s.split('|');
             (
                 parts.next().unwrap_or("").to_string(),
-                parts.next().unwrap_or("").to_string(),
+                parts.map(String::from).collect(),
             )
         })
         .collect()
 }
 fn get_user_reply(user: &str) -> Option<String> {
-    read_user_replies().get(&user.to_lowercase()).cloned()
+    read_user_replies()
+        .get(&user.to_lowercase())?
+        .get(0)
+        .cloned()
 }
 
 #[tokio::main]
 async fn main() {
-    // Configure the client with your Discord bot token in the environment.
-    // let msg_reply_file = "msg_reply.txt";
-    // let msg_replies: HashMap<String, String> = fs::read_to_string(msg_reply_file)
-    //     .expect("Something went wrong reading the file")
-    //     .split('\n')
-    //     .map(|s| {
-    //         (
-    //             s.chars().take_while(|c| *c != ' ').collect(),
-    //             s.chars().skip_while(|c| *c != ' ').collect(),
-    //         )
-    //     })
-    //     .collect();
 
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
     // Set gateway intents, which decides what events the bot will be notified about
