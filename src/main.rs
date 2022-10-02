@@ -1,35 +1,92 @@
 #![feature(iter_intersperse)]
+use rand::Rng;
 use std::collections::HashMap;
 use std::{env, fs};
-use rand::seq::SliceRandom;
+use yaml_rust::YamlLoader;
 
 use serenity::async_trait;
-use serenity::model::channel::Message;
+use serenity::model::channel::{Message, ReactionType};
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
 struct Handler;
 
-type ReplyMap = HashMap<String, Vec<String>>;
+#[derive(Debug, Clone)]
+struct Reply {
+    message: String,
+    percent: i64,
+}
+#[derive(Debug, Clone)]
+struct React {
+    emoji: String,
+}
+#[derive(Debug)]
+struct Actions {
+    reaction: Option<React>,
+    reply: Option<Reply>,
+}
+
+impl Actions {
+    fn get_message(&self) -> Option<String> {
+        let reply = self.reply.clone()?;
+        (rand::thread_rng().gen_range(0..=100) < reply.percent).then_some(reply.message)
+    }
+    fn get_reaction(&self) -> Option<String> {
+        let reaction = self.reaction.clone()?;
+        Some(reaction.emoji)
+    }
+}
+
+type ActionMap = HashMap<String, Actions>;
+
+fn parse_actions() -> ActionMap {
+    let data = fs::read_to_string(env::var("USER_REPLY_FILE").expect("USER_REPLY_FILE is not set"))
+        .expect("Something went wrong reading the file");
+    let doc = YamlLoader::load_from_str(&data).unwrap();
+
+    let mut map = ActionMap::new();
+    let users = &doc[0]["users"];
+    for user in users.as_vec().unwrap() {
+        let name = user["name"]
+            .as_str()
+            .expect("Each user in config must contain a name")
+            .to_lowercase();
+        let react: Option<React> = user["reaction"].as_str().map(|reaction| React {
+            emoji: reaction.to_string(),
+        });
+        let reply: Option<Reply> = user["reply"].as_str().map(|message| Reply {
+            message: message.to_string(),
+            percent: user["reply_percent"].as_i64().unwrap_or(100),
+        });
+        let actions = Actions {
+            reaction: react,
+            reply,
+        };
+        map.insert(name, actions);
+    }
+    map
+}
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
-        if msg.content.starts_with("!set") {
-            set_user_reply(&msg.content["!set ".len()..]);
-        } else if msg.content.starts_with("!unset") {
-            let mut replies = read_user_replies();
-            replies.remove(&msg.content["!unset ".len()..].trim().to_lowercase());
-            write_user_replies(replies);
-        } else if msg.content.starts_with("!add") {
-            add_user_reply(&msg.content["!add ".len()..]);
-        } else if let Some(s) = get_user_reply(&msg.author.name) {
-            if let Err(why) = msg
-                .channel_id
-                .send_message(&ctx.http, |m| m.content(s).tts(false))
-                .await
-            {
-                println!("Error sending message: {:?}", why);
+        if let Some(actions) = parse_actions().get(&msg.author.name.to_lowercase()) {
+            if let Some(s) = actions.get_message() {
+                if let Err(why) = msg
+                    .channel_id
+                    .send_message(&ctx.http, |m| m.content(s).tts(false))
+                    .await
+                {
+                    println!("Error sending message: {:?}", why);
+                }
+            }
+            if let Some(s) = actions.get_reaction() {
+                if let Err(why) = msg
+                    .react(&ctx.http, ReactionType::try_from(s).unwrap())
+                    .await
+                {
+                    println!("Error sending message: {:?}", why);
+                }
             }
         }
     }
@@ -37,96 +94,6 @@ impl EventHandler for Handler {
     async fn ready(&self, _: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
     }
-}
-
-fn split_input(input: &str) -> Vec<&str> {
-    if input.contains('|') {
-        return input.split('|').collect();
-    }
-
-    let idx = input.find(' ').unwrap_or(0);
-    if idx != 0 {
-        return vec![&input[..idx], &input[idx + 1..]];
-    }
-
-    vec![]
-}
-
-fn set_user_reply(input: &str) {
-    let parts = split_input(input);
-    if parts.is_empty() {
-        return;
-    }
-
-    let mut replies = read_user_replies();
-    replies.insert(
-        parts[0].trim().to_lowercase(),
-        parts.iter().skip(1).cloned().map(String::from).collect(),
-    );
-
-    write_user_replies(replies);
-}
-
-fn add_user_reply(input: &str) {
-    let parts = split_input(input);
-    if parts.is_empty() {
-        return;
-    }
-
-    let mut replies = read_user_replies();
-
-    let user = parts[0].to_lowercase();
-    let mut reply: Vec<String> = parts.iter().skip(1).cloned().map(String::from).collect();
-    if let Some(v) = replies.get_mut(&user) {
-        v.append(&mut reply);
-    } else {
-        replies.insert(
-            user,
-            reply,
-        );
-    }
-
-    write_user_replies(replies);
-}
-
-fn write_user_replies(replies: ReplyMap) {
-    fs::write(
-        env::var("USER_REPLY_FILE").expect("USER_REPLY_FILE is not set"),
-        replies
-            .iter()
-            .map(|(k, v)| {
-                format!(
-                    "{}|{}\n",
-                    k.to_lowercase(),
-                    v.iter()
-                        .cloned()
-                        .intersperse("|".to_string())
-                        .collect::<String>()
-                )
-            })
-            .collect::<String>(),
-    )
-    .expect("Failed to write file");
-}
-
-fn read_user_replies() -> ReplyMap {
-    fs::read_to_string(env::var("USER_REPLY_FILE").expect("USER_REPLY_FILE is not set"))
-        .expect("Something went wrong reading the file")
-        .split('\n')
-        .map(|s| {
-            let mut parts = s.split('|');
-            (
-                parts.next().unwrap_or("").to_string(),
-                parts.map(String::from).collect(),
-            )
-        })
-        .collect()
-}
-fn get_user_reply(user: &str) -> Option<String> {
-    read_user_replies()
-        .get(&user.to_lowercase())?
-        .choose(&mut rand::thread_rng())
-        .cloned()
 }
 
 #[tokio::main]
